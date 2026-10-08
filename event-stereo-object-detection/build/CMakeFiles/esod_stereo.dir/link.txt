@@ -1,0 +1,2 @@
+/usr/bin/ar qc libesod_stereo.a CMakeFiles/esod_stereo.dir/src/StereoRigs.cpp.o
+/usr/bin/ranlib libesod_stereo.a

@@ -1,0 +1,15 @@
+{
+    "left_camera": {
+        "serial": "genx320 11-003c",
+        "role": "master"
+    },
+    "right_camera": {
+        "serial": "genx320 10-003c",
+        "role": "slave"
+    },
+    "display": {
+        "accumulation_time_us": 10000,
+        "fps": 50,
+        "scale": 3
+    }
+}
