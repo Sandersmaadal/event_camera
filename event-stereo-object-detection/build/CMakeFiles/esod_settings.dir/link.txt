@@ -1,2 +1,0 @@
-/usr/bin/ar qc libesod_settings.a CMakeFiles/esod_settings.dir/src/Settings.cpp.o
-/usr/bin/ranlib libesod_settings.a

@@ -1,2 +1,0 @@
-/usr/bin/ar qc libesod_framegen.a CMakeFiles/esod_framegen.dir/src/Framegenerator.cpp.o
-/usr/bin/ranlib libesod_framegen.a
