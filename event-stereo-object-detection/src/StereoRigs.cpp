@@ -3,6 +3,9 @@
 #include <stdexcept>
 #include <string>
 #include <metavision/hal/facilities/i_camera_synchronization.h>
+#include <filesystem>
+
+
 
 namespace esod
 {
@@ -41,6 +44,27 @@ namespace esod
         } else {
             throw std::runtime_error("settings.json needs exactly one \"master\" and one \"slave\" role");
         }
+    }
+
+    void StereoRig::open_files(const std::filesystem::path &left_file, const std::filesystem::path &right_file) {
+        left_  = Metavision::Camera::from_file(left_file);
+        right_ = Metavision::Camera::from_file(right_file);
+    }
+
+    void StereoRig::start_recording(const std::filesystem::path &prefix) {
+        const std::filesystem::path left_file  = prefix.string() + "_left.raw";
+        const std::filesystem::path right_file = prefix.string() + "_right.raw";
+        if (!left_.start_recording(left_file)) {
+            throw std::runtime_error("Could not start recording to " + left_file.string());
+        }
+        if (!right_.start_recording(right_file)) {
+            throw std::runtime_error("Could not start recording to " + right_file.string());
+        }
+    }
+
+    void StereoRig::stop_recording() {
+        left_.stop_recording();
+        right_.stop_recording();
     }
 
 

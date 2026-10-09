@@ -1,0 +1,5 @@
+# CMake build output
+event-stereo-object-detection/build/
+
+# Camera recordings (.raw / .bias)
+event-stereo-object-detection/data/

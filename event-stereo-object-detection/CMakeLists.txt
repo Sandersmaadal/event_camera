@@ -37,3 +37,6 @@ foreach(app view_single view_dual)
     MetavisionSDK::ui
     ${OpenCV_LIBS})
 endforeach()
+
+target_compile_definitions(view_dual PRIVATE
+  ESOD_DATA_DIR="${CMAKE_SOURCE_DIR}/data")
