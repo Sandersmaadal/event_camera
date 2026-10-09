@@ -1,12 +1,18 @@
 // view_dual: show the left and right event cameras side by side in one window.
 // The cameras are synchronized.
-//   ./view_dual        uses the serials in settings.json
+// ./view_dual                           # live, nothing saved
+// ./view_dual --record                  # live and saved as data/<date_time>_left/right.raw
+// ./view_dual --record test01           # live and saved as data/test01_left/right.raw
+// ./view_dual data/a_left.raw data/a_right.raw    # replay a saved pair
 //
 // Press Q or Escape to quit.
 
+#include <ctime>
 #include <exception>
+#include <filesystem>
 #include <iostream>
- 
+#include <string>
+
 #include <opencv2/imgproc.hpp>
  
 #include <esod/Framegenerator.h>
@@ -18,13 +24,44 @@
 #include <metavision/sdk/ui/utils/window.h>
 
 
-int main(int argc, char *argv[]) 
+// Path prefix for a new recording, e.g. <project>/data/test01.
+// With no name, the current date and time is used, e.g. <project>/data/20261009_143012.
+// ESOD_DATA_DIR is set in CMakeLists.txt.
+std::filesystem::path new_recording_prefix(std::string name) {
+    std::filesystem::create_directories(ESOD_DATA_DIR);
+    if (name.empty()) {
+        const std::time_t now = std::time(nullptr);
+        char stamp[32];
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", std::localtime(&now));
+        name = stamp;
+    }
+    return std::filesystem::path(ESOD_DATA_DIR) / name;
+}
+
+
+int main(int argc, char *argv[])
 {
+    const bool record = (argc == 2 || argc == 3) && std::string(argv[1]) == "--record";
+    const bool replay = argc == 3 && !record;
+    if (argc != 1 && !record && !replay) {
+        std::cerr << "Usage: view_dual [--record [name] | left.raw right.raw]" << std::endl;
+        return 1;
+    }
+
     esod::Settings settings;
     esod::StereoRig rig;
     try {
         settings = esod::load_settings();
-        rig.open(settings);
+        if (replay) {
+            rig.open_files(argv[1], argv[2]);
+        } else {
+            rig.open(settings);
+        }
+        if (record) {
+            const std::filesystem::path prefix = new_recording_prefix(argc == 3 ? argv[2] : "");
+            rig.start_recording(prefix);
+            std::cout << "Recording to " << prefix.string() << "_left.raw / _right.raw" << std::endl;
+        }
     } catch (const std::exception &e) {
         std::cerr << "Startup failed: " << e.what() << std::endl;
         return 1;
@@ -73,6 +110,9 @@ int main(int argc, char *argv[])
     }
  
     // Stop the cameras before the frame generators are destroyed.
+    if (record) {
+        rig.stop_recording();
+    }
     rig.stop();
     return 0;
 }
