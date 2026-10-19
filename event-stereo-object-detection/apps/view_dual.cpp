@@ -1,13 +1,13 @@
 // view_dual: show the left and right event cameras side by side in one window.
 // The cameras are synchronized.
 // ./view_dual                           # live, nothing saved
-// ./view_dual --record                  # live and saved as data/<date_time>_left/right.raw
-// ./view_dual --record test01           # live and saved as data/test01_left/right.raw
-// ./view_dual data/a_left.raw data/a_right.raw    # replay a saved pair
+// ./view_dual --record                  # live and saved as <data_dir>/<date_time>_left/right.raw
+// ./view_dual --record test01           # live and saved as <data_dir>/test01_left/right.raw
+// ./view_dual a_left.raw a_right.raw    # replay a saved pair
+// <data_dir> is "recording.data_dir" in settings.json.
 //
 // Press Q or Escape to quit.
 
-#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -16,27 +16,13 @@
 #include <opencv2/imgproc.hpp>
  
 #include <esod/Framegenerator.h>
+#include <esod/Recording.h>
 #include <esod/Settings.h>
 #include <esod/StereoRig.h>
- 
+
 #include <metavision/sdk/stream/camera.h>
 #include <metavision/sdk/ui/utils/event_loop.h>
 #include <metavision/sdk/ui/utils/window.h>
-
-
-// Path prefix for a new recording, e.g. <project>/data/test01.
-// With no name, the current date and time is used, e.g. <project>/data/20261009_143012.
-// ESOD_DATA_DIR is set in CMakeLists.txt.
-std::filesystem::path new_recording_prefix(std::string name) {
-    std::filesystem::create_directories(ESOD_DATA_DIR);
-    if (name.empty()) {
-        const std::time_t now = std::time(nullptr);
-        char stamp[32];
-        std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", std::localtime(&now));
-        name = stamp;
-    }
-    return std::filesystem::path(ESOD_DATA_DIR) / name;
-}
 
 
 int main(int argc, char *argv[])
@@ -58,7 +44,8 @@ int main(int argc, char *argv[])
             rig.open(settings);
         }
         if (record) {
-            const std::filesystem::path prefix = new_recording_prefix(argc == 3 ? argv[2] : "");
+            const std::filesystem::path prefix =
+                esod::new_recording_prefix(settings.recording.data_dir, argc == 3 ? argv[2] : "");
             rig.start_recording(prefix);
             std::cout << "Recording to " << prefix.string() << "_left.raw / _right.raw" << std::endl;
         }

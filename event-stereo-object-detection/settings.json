@@ -11,5 +11,20 @@
         "accumulation_time_us": 10000,
         "fps": 50,
         "scale": 3
+    },
+
+    "realsense": {
+        "rgb": {
+            "width": 640,
+            "height": 480
+        },
+        "depth": {
+            "width": 1280,
+            "height": 720
+        },
+        "fps": 15
+    },
+    "recording": {
+        "data_dir": "/media/master27/T7/recordings"
     }
 }
