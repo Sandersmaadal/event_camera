@@ -3,3 +3,9 @@ event-stereo-object-detection/build/
 
 # Camera recordings (.raw / .bias)
 event-stereo-object-detection/data/
+
+# RealSense build output
+realsense/build/
+
+# RealSense recordings (.db3)
+realsense/data/
