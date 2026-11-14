@@ -17,12 +17,15 @@ from . import settings as S
 
 def signed_frame(ev, t0, t1):
     """ON count minus OFF count per pixel for the events in [t0, t1), as int8."""
-    i0, i1 = ev.window(t0, t1)
-    idx = ev.y[i0:i1].astype(np.int64) * ev.width + ev.x[i0:i1]
-    on = ev.on[i0:i1]
-    n = ev.width * ev.height
-    s = np.bincount(idx[on], minlength=n) - np.bincount(idx[~on], minlength=n)
-    return np.clip(s, -127, 127).astype(np.int8).reshape(ev.height, ev.width)
+    from_indices, to_indicies = ev.window(t0, t1)
+    linear_indices = ev.y[from_indices:to_indicies].astype(np.int64) * ev.width + ev.x[from_indices:to_indicies]
+    polarity = ev.on[from_indices:to_indicies]
+    num_pixels = ev.width * ev.height
+    on_events = np.bincount(linear_indices[polarity], minlength=num_pixels)
+    off_events = np.bincount(linear_indices[~polarity], minlength=num_pixels)
+    diff = on_events - off_events
+    image = np.clip(diff, -127, 127).astype(np.int8).reshape(ev.height, ev.width)
+    return image
 
 
 def _normalised(frame):

@@ -36,6 +36,8 @@
 #include <esod/Settings.h>
 #include <esod/StereoRig.h>
 
+#include <opencv2/videoio.hpp>
+
 #include <metavision/sdk/base/events/event_cd.h>
 #include <metavision/sdk/stream/camera.h>
 #include <metavision/sdk/ui/utils/event_loop.h>
@@ -104,11 +106,17 @@ void write_info(const std::filesystem::path &file, const esod::Settings &setting
 int main(int argc, char *argv[])
 {
     bool show_window = true;
+    bool replay = false; 
+    std::string video_file;
     std::string name;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--no-window") {
             show_window = false;
+        } else if (arg == "--replay") {
+            replay = true; 
+        } else if (arg == "--video" && i + 1 < argc) {
+            video_file = argv[++i]; 
         } else if (name.empty() && arg[0] != '-') {
             name = arg;
         } else {
@@ -123,10 +131,16 @@ int main(int argc, char *argv[])
     std::filesystem::path prefix;
     try {
         settings = esod::load_settings();
-        prefix = esod::new_recording_prefix(settings.recording.data_dir, name);
-        rig.open(settings);
-        realsense.open(settings, prefix.string() + "_realsense.db3");
-        rig.start_recording(prefix);
+        if (replay) {
+            prefix = name;   // e.g. ../data_collection/recordings/test03
+            rig.open_files(prefix.string() + "_left.raw", prefix.string() + "_right.raw");
+            realsense.open_file(prefix.string() + "_realsense.db3");
+        } else {
+            prefix = esod::new_recording_prefix(settings.recording.data_dir, name);
+            rig.open(settings);
+            realsense.open(settings, prefix.string() + "_realsense.db3");
+            rig.start_recording(prefix);
+        }
     } catch (const std::exception &e) {
         std::cerr << "Startup failed: " << e.what() << std::endl;
         return 1;
@@ -174,7 +188,7 @@ int main(int argc, char *argv[])
     // exists even if the recording ends without a clean stop.
     bool info_written = false;
     auto write_info_when_anchored = [&] {
-        if (info_written) return;
+        if (info_written || replay) return;
         {
             std::lock_guard<std::mutex> lock(anchor.mutex);
             if (!anchor.set) return;
@@ -196,6 +210,22 @@ int main(int argc, char *argv[])
 
         const cv::Scalar white(255, 255, 255);
         cv::Mat combined;
+
+
+        cv::VideoWriter video;
+        const double video_fps = 25.0;
+        if (!video_file.empty()) {
+            video.open(video_file, cv::VideoWriter::fourcc('m', 'p', '4', 'v'), video_fps,
+                       cv::Size(2 * width + rgb_size.width, height));
+            if (video.isOpened()) {
+                std::cout << "Saving video to " << video_file << std::endl;
+            } else {
+                std::cerr << "Could not open " << video_file << " for writing, continuing without video." << std::endl;
+            }
+        }
+        const auto video_start = std::chrono::steady_clock::now();
+        std::int64_t frames_written = 0;
+
         while (rig.is_running() && !window.should_close() && !stop_requested) {
             const cv::Mat new_rgb = realsense.latest_color();
             if (!new_rgb.empty()) {
@@ -209,6 +239,16 @@ int main(int argc, char *argv[])
             cv::putText(combined, "realsense", cv::Point(2 * width + 10, 25), cv::FONT_HERSHEY_SIMPLEX, 0.7, white, 2);
 
             window.show(combined);
+
+
+            if (video.isOpened()) {
+                const double elapsed_s =
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - video_start).count();
+                while (frames_written < elapsed_s * video_fps) {
+                    video.write(combined);
+                    ++frames_written;
+                }
+            }
             Metavision::EventLoop::poll_and_dispatch(20); // sleeps up to 20 ms
             write_info_when_anchored();
         }
@@ -223,6 +263,11 @@ int main(int argc, char *argv[])
     }
 
     // Stop the cameras before the frame generators are destroyed.
+    if (replay) {
+        rig.stop();
+        realsense.stop();
+        return 0;
+    }
     rig.stop_recording();
     rig.stop();
     realsense.stop();

@@ -3,7 +3,7 @@
 # --- Cameras (Prophesee GenX320) -------------------------------------------
 SERIAL_LEFT = "genx320 11-003c"   # run `metavision_platform_info` to get yours
 SERIAL_RIGHT = "genx320 10-003c"
-LEFT_ROLE = "slave"               # hardware sync role, as in yug3nn's setup
+LEFT_ROLE = "slave"               # hardware sync role
 RIGHT_ROLE = "master"
 BIAS_INCREMENT = 5                # added to bias_diff_on / bias_diff_off while recording
 
@@ -11,11 +11,10 @@ BIAS_INCREMENT = 5                # added to bias_diff_on / bias_diff_off while 
 # The HTML page shows 10 x 7 squares, which gives 9 x 6 inner corners.
 BOARD_COLS = 9                    # inner corners along the screen's horizontal axis
 BOARD_ROWS = 6                    # inner corners along the screen's vertical axis
-# Measure these ON THE TV with a ruler: total board width / 10 and total
-# board height / 7. They must be re-measured for every screen you use.
+
 # None = calibrate.py refuses to run until you set them (or pass --square-mm).
-SQUARE_W_MM = 85
-SQUARE_H_MM = 85               # None = same as SQUARE_W_MM
+SQUARE_W_MM = 26.5
+SQUARE_H_MM = 26.5               # None = same as SQUARE_W_MM
 FLIP_PERIOD_MS = 400              # FREQ_MS in the HTML page
 
 # --- Flip detection ----------------------------------------------------------
