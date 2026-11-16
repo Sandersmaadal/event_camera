@@ -1,2 +1,4 @@
 numpy
 opencv-python
+matplotlib
+pybind11      # only for building the C++ part (cpp/build.sh)

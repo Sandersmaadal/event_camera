@@ -30,14 +30,11 @@ def true_depth_rectified(calib, truth):
     return z, on_board.reshape(calib.height, calib.width)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("session")
-    ap.add_argument("--depth-dir")
-    args = ap.parse_args()
-    session = args.session.rstrip("/")
-    depth_dir = args.depth_dir or session + "_depth"
+def evaluate(session, depth_dir):
+    """Error statistics of depth.py's output against the true depth.
 
+    Returns {"n_steps", "n_points", "board": {...}, "wall": {...}, "outliers", "pass"}.
+    """
     calib = StereoCalib(os.path.join(session, "config"))
     with open(os.path.join(session, "truth.json")) as f:
         truth = json.load(f)
@@ -49,19 +46,39 @@ def main():
     disp_err = d["disparity"] - disp_true
     rel = np.abs(z - zt) / zt
 
-    print(f"{z.size} depth points over {d['times_us'].size} steps, "
-          f"{z.size / d['times_us'].size:.0f} per step")
+    out = {"n_steps": int(d["times_us"].size), "n_points": int(z.size)}
     for name, m in (("board", board), ("wall", ~board)):
-        if not m.any():
-            continue
         e = disp_err[m]
-        print(f"{name:5s} true {zt[m].mean():.2f} m: {m.sum():6d} pts, median depth {np.median(z[m]):.3f} m, "
-              f"disparity error median {np.median(e):+.3f} px, MAE {np.mean(np.abs(e)):.3f} px, "
-              f"outliers (>1 px) {np.mean(np.abs(e) > 1):.1%}, rel. depth error median {np.median(rel[m]):.1%}")
-    bad = np.mean(np.abs(disp_err) > 1)
-    ok = bad < 0.05 and np.median(np.abs(disp_err)) < 0.5
-    print("PASS" if ok else "FAIL")
-    sys.exit(0 if ok else 1)
+        out[name] = {"n": int(m.sum()), "z_true": float(zt[m].mean()) if m.any() else float("nan"),
+                     "z_median": float(np.median(z[m])) if m.any() else float("nan"),
+                     "err_median": float(np.median(e)) if m.any() else float("nan"),
+                     "mae": float(np.mean(np.abs(e))) if m.any() else float("nan"),
+                     "outliers": float(np.mean(np.abs(e) > 1)) if m.any() else float("nan"),
+                     "rel_median": float(np.median(rel[m])) if m.any() else float("nan")}
+    out["outliers"] = float(np.mean(np.abs(disp_err) > 1)) if z.size else 1.0
+    out["pass"] = bool(z.size and out["outliers"] < 0.05 and np.median(np.abs(disp_err)) < 0.5)
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("session")
+    ap.add_argument("--depth-dir")
+    args = ap.parse_args()
+    session = args.session.rstrip("/")
+    r = evaluate(session, args.depth_dir or session + "_depth")
+
+    print(f"{r['n_points']} depth points over {r['n_steps']} steps, "
+          f"{r['n_points'] / max(r['n_steps'], 1):.0f} per step")
+    for name in ("board", "wall"):
+        s = r[name]
+        if not s["n"]:
+            continue
+        print(f"{name:5s} true {s['z_true']:.2f} m: {s['n']:6d} pts, median depth {s['z_median']:.3f} m, "
+              f"disparity error median {s['err_median']:+.3f} px, MAE {s['mae']:.3f} px, "
+              f"outliers (>1 px) {s['outliers']:.1%}, rel. depth error median {s['rel_median']:.1%}")
+    print("PASS" if r["pass"] else "FAIL")
+    sys.exit(0 if r["pass"] else 1)
 
 
 if __name__ == "__main__":

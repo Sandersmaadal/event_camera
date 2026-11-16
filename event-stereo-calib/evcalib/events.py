@@ -48,6 +48,11 @@ def read_raw(path, chunk_us=100_000):
     try:
         from metavision_core.event_io import EventsIterator
     except ImportError as e:
+        if e.name and not e.name.startswith("metavision"):
+            # The SDK is there, but one of the Python packages it needs is not.
+            raise RuntimeError(
+                f"Reading {path}: the Metavision SDK is installed but needs the Python package "
+                f"'{e.name}'. Install it with: pip install {e.name}") from e
         raise RuntimeError(
             f"Reading {path} needs the Metavision SDK (metavision_core). "
             "Convert it to .npz on the machine that has the SDK: "

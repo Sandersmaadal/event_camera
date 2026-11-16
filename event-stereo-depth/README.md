@@ -1,112 +1,247 @@
 # event-stereo-depth
 
-Semi-dense depth from the stereo GenX320 rig: every event is rectified with the
-calibration from `event-stereo-calib`, a short window of events is turned into
-an image, and the two images are block-matched along rectified rows.
+Depth from the stereo GenX320 rig. Every event is rectified with the
+calibration from `event-stereo-calib`, then matched to the other camera in
+one of two ways:
 
-It is a baseline: simple, interpretable, and meant to be compared against
-other representations and matchers later.
+- **Windowed** (`depth.py`): a short window of events is turned into an image
+  (`voxel` grid by default) and block-matched along rectified rows (census
+  cost by default). Semi-dense: a depth at the pixels with events.
+- **Event by event** (`depth_events.py`, C++): every left event is matched
+  the moment it arrives, against the right camera's latest events, by how
+  well their timestamps coincide. No windows, a depth per event, faster than
+  real time.
 
-## Pipeline
+Which methods were compared, and why these were kept, is in
+[results/DECISIONS.md](results/DECISIONS.md), with all the numbers.
 
-1. **Rectification** (`evdepth/rectify.py`). A 320 x 320 lookup table per
-   camera maps raw pixel (x, y) to rectified sub-pixel (x, y), built from
-   `camera_*.json` and `stereo_params.json`. After it, matching events are on
-   the same row in both cameras.
-2. **Representation** (`evdepth/representation.py`), chosen with `--repr`:
-   - `count` (default): event frame, events per pixel with bilinear splatting
-     and a light blur.
-   - `ts`: exponential time surface, exp(-(t - t_last) / tau).
-3. **Matching** (`evdepth/matching.py`). ZNCC over a square patch for every
-   disparity, using box filters, then the best disparity with parabolic
-   sub-pixel refinement.
-4. **Rejection** (the confidence measures). A match is kept only when the left
-   patch has enough events, the ZNCC is high enough, the best disparity beats
-   any non-neighbouring one by a margin (uniqueness), and matching back from
-   the right image gives the same disparity (left-right check). The output
-   keeps the score and margin of every point, so you can threshold later.
-5. **Depth**: z = f * B / d, in the rectified left camera frame, metres.
+## Results on the lab tests
+
+A ball at a tape-measured distance (`tests/evaluate_lab.py`, with
+`--row-shift -2`, see "Checking the rectification"). Points inside the ball's
+box; within ±10 % of the true distance:
+
+| Method | 1 m | 2 m | 3 m | Computing per second of recording |
+| --- | --- | --- | --- | --- |
+| `depth.py` (`voxel` + census) | 5971 points, +1.1 %, 99.7 % | 1534 points, 0.0 %, 99.2 % | 731 points, -3.6 %, 99.2 % | about 14 s |
+| `depth_events.py` | 4745 points, +1.5 %, 99.9 % | 1402 points, -1.0 %, 100 % | 395 points, -3.4 %, 99.7 % | 0.2-0.7 s |
+
+(points, error of the median, share within ±10 %). The error pattern is the
+same for every method, so it most likely comes from the setup (where the
+distance was measured from, how exactly the ball was placed), not from the
+matching.
 
 ## Use
 
-```
-pip install numpy opencv-python
+```bash
+pip install numpy opencv-python matplotlib pybind11
+cpp/build.sh                  # the C++ part, for depth_events.py; needs cmake and a C++17 compiler
+
 python depth.py <recording> --config <calib session>/config [--preview] [--roi X0 Y0 X1 Y1]
+python depth_events.py <recording> --config <calib session>/config
 ```
 
 `<recording>` is a folder with `left.npz` and `right.npz` (or `.raw`), or a
 `record_all` prefix such as `/media/master27/T7/recordings/test01` (which
 finds `test01_left.raw` and `test01_right.raw`). Reading `.raw` needs the
-Metavision SDK; convert to `.npz` on the Pi first with
-`event-stereo-calib/convert.py` if you process on another machine.
+Metavision SDK; convert to `.npz` with `event-stereo-calib/convert.py` to
+work on another machine. Run `cpp/build.sh` again after every change to
+`cpp/event_match.cpp`; without the build everything except `depth_events.py`
+works.
 
-Output in `<recording>_depth/`:
+Output of `depth.py` in `<recording>_depth/` (`depth_events.py`:
+`<recording>_depth_events/`):
 
 | File | Content |
 | --- | --- |
-| `depth.npz` | One row per matched pixel: `frame`, `x`, `y` (rectified left), `disparity`, `depth_m`, `score`, `margin`; plus `times_us` per frame and the settings used |
-| `preview/*.png` | Rectified left and right images with row lines, and the depth map (red near, blue far) |
-| `roi_depth.csv` | With `--roi`: median depth in the box per step, for comparing with a tape-measured target |
+| `depth.npz` | One row per matched pixel and step: `frame`, `x`, `y` (rectified left), `disparity`, `depth_m`, `cost`, `margin`; plus `times_us` per step and the settings used |
+| `events.npz` | `depth_events.py` only: every left event with its own disparity, depth and status |
+| `preview/*.png` | `depth.py --preview`: rectified left and right images with row lines, and the depth map (red near, blue far) |
+| `roi_depth.csv` | `depth.py --roi`: median depth in the box per step |
 
-The script prints how many pixels were rejected by each check. That breakdown
-is the first thing to look at when results are poor.
+`python depth_to_csv.py <output folder> [--roi X0 Y0 X1 Y1]` writes
+`points.csv` (every matched pixel) and `per_step.csv` (median and quartiles
+of the depth per step) next to `depth.npz`.
 
-### Main settings
+Both scripts print how many events or pixels each check rejected. That
+breakdown is the first thing to look at when results are poor.
+
+## depth.py: windowed matching
+
+1. **Rectification** (`evdepth/rectify.py`). A lookup table per camera maps
+   raw pixel (x, y) to rectified sub-pixel (x, y). After it, matching events
+   are on the same row in both cameras.
+2. **Representation** (`evdepth/representation.py`, `--repr`), a `(C, H, W)`
+   array per camera:
+   - `voxel` (default): the window cut into `--bins` time bins (3), each event
+     spread linearly over the two nearest bins and bilinearly in space,
+     weighted +1 for ON and -1 for OFF.
+   - `count`: events per pixel, bilinear splatting, light blur. The simple
+     baseline.
+
+   To add one: write `f(win, params) -> (C, H, W)` and add it to
+   `REPRESENTATIONS`.
+3. **Matching cost** (`evdepth/costs.py`, `--cost`), for every pixel and
+   disparity, from 0 (identical patches) to 1 (no match):
+   - `census` (default): each pixel gets one bit per neighbour in a 7 x 7
+     window (`--census-size`), set where the neighbour is above the window
+     mean; the cost is the fraction of differing bits over the patch. Only
+     the order of the values counts, so it does not care if one camera fires
+     more events than the other.
+   - `zncc`: zero-mean normalised cross-correlation, the standard baseline.
+     With several channels the patch is compared as one stacked vector.
+
+   To add one: write `f(left, right, params, sign) -> (cost volume, disparities)`
+   and add it to `COSTS`.
+4. **Disparity and rejection** (`evdepth/matching.py`). The lowest-cost
+   disparity with parabolic sub-pixel refinement. Kept only when the left
+   patch has enough events, the cost is below `--max-cost`, the best
+   disparity beats any non-neighbouring one by `--min-margin`, and matching
+   back from the right image gives the same disparity.
+5. **Depth**: z = f * B / d, in the rectified left camera frame, metres.
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `--window-ms` | 20 | Events per estimate. Should hold a few pixels of image motion. Slow or distant objects need a longer window |
+| `--window-ms` | 20 | Events per estimate. Should hold a few pixels of image motion |
 | `--step-ms` | 50 | Time between estimates |
-| `--max-disp` | 96 | Exclusive. The nearest depth is f * B / (max-disp - 1). With f = 170 px and B = 400 mm, 96 px is about 0.7 m |
+| `--max-disp` | 96 | Exclusive. The nearest depth is f * B / (max-disp - 1); the startup line prints it. 128 reaches about 0.8 m on the lab rig |
 | `--min-disp` | 0 | Raise it to ignore far-away background |
+| `--repr`, `--bins` | voxel, 3 | |
+| `--cost` | census | `census` or `zncc` |
 | `--patch` | 11 | Larger is more robust, but blurs depth edges |
-| `--min-score`, `--min-margin` | 0.5, 0.1 | Correlation and uniqueness limits |
+| `--max-cost`, `--min-margin` | census: 0.35, 0.02; zncc: 0.25, 0.05 | Cost and uniqueness limits. For ZNCC, 0.25 means a ZNCC of at least 0.5 |
+| `--row-shift` | 0 | Row shift measured with `check_rectification.py`, corrected in the right camera. Only when the rig moved after calibration |
 | `--right-offset-us` | 0 | Only for recordings without hardware sync |
 
-The startup line prints the depth error caused by one pixel of disparity error
-at 1, 5 and 10 m for your calibration. With a 320 px sensor this, not the
+The startup line also prints the depth error caused by one pixel of
+disparity error at 1, 5 and 10 m. With a 320 px sensor this, not the
 matcher, is often the limit at long range.
 
-## Checking it without hardware
+## depth_events.py: event-by-event matching in C++
 
+The matching is in `cpp/event_match.cpp`, used from Python as
+`evdepth._evmatch` through pybind11. Left and right events are processed
+together in time order; each camera keeps the time of its latest event per
+pixel and polarity. For each left event, using only events up to its time:
+
+1. the recent left events in the `--patch` neighbourhood (at most
+   `--max-age-ms` old) are compared with the right camera's latest event of
+   the same polarity at the matching pixel, at every disparity: cost
+   min(time difference / `--max-dt-ms`, 1), averaged. Rows within
+   `--time-rows` above and below count too, because real pixels fire
+   irregularly and the partner pixel often has no recent event;
+2. the best disparity must be below `--max-cost` and beat the
+   non-neighbouring ones by `--min-margin`;
+3. left-right check: the right camera's patch at the matched position is
+   matched back to the left and must land within `--lr-tol` pixels;
+4. sub-pixel disparity from a parabola through the costs.
+
+The events are cut into time chunks that run on all cores (`--threads`).
+Each chunk first replays the history a match can use, so the result does not
+depend on the number of threads.
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `--patch` | 11 | |
+| `--max-age-ms` | 20 | Older left events are ignored |
+| `--max-dt-ms` | 5 | Time difference that counts as no match |
+| `--time-rows` | 2 | Rows searched above and below |
+| `--min-events` | 6 | Recent left events in the patch needed |
+| `--max-cost`, `--min-margin` | 0.6, 0.02 | |
+| `--lr-tol` | 1 | Pixels; -1 switches the left-right check off |
+| `--threads` | 0 | 0 = all cores |
+| `--row-shift`, `--max-disp`, `--min-disp` | as in `depth.py` | |
+| `--step-ms`, `--window-ms` | 50, 20 | Only for the steps of `depth.npz` |
+
+The work per event is (recent left events in the patch) x (disparities) x
+(2 `--time-rows` + 1), so `--patch`, `--max-age-ms` and `--time-rows` set
+the speed.
+
+Time matching needs motion. On the simulation, whose texture moves slowly,
+it fails (wall MAE 10 px): a point seen at slightly different sub-pixel
+positions by the two cameras then fires milliseconds apart, so the
+timestamps no longer tell the disparities apart. On the rolling ball it is
+the most reliable method.
+
+## Checking the rectification
+
+```bash
+python check_rectification.py <recording> --config <config>
+python check_rectification.py <recording> --config <config> --start-s 4.2 --duration-s 0.8 --step-ms 50
 ```
+
+Matches every pixel with events against the right image shifted up and down
+by up to 4 rows (`--max-dy`) and reports which row shift fits best: the
+median, a 4 x 4 map over the image, and `rectification_check.png` in
+`<recording>_rectification/`. With a calibration that still fits the rig the
+shifts are centred on 0. A positive shift means a point at row y in the left
+image is found at row y + dy in the right image; correct it with
+`--row-shift <median>`. Only horizontal structure tells the row shift, so
+pixels where the best shift does not clearly win are skipped.
+`--right-offset-us` tests whether a shift seen only on moving objects is a
+time offset instead.
+
+On the lab recordings the calibration recording gives -0.05 rows, but the
+lab tests (recorded 23 minutes later) give -2 rows: most likely one camera
+tilted by about 0.3° after calibration. All lab results use
+`--row-shift -2`; without it `voxel` + census finds 7x fewer points at 3 m.
+If a camera also turned sideways, the depth would be biased in a way this
+check cannot see.
+
+For new recordings: calibrate after the rig is mounted in its final place,
+don't touch it between calibration and recording, and run
+`check_rectification.py` on every recording.
+
+## Figures
+
+```bash
+python visualize_representations.py <recording> --config <config> --t-s 2.5 [--roi X0 Y0 X1 Y1]
+```
+
+Draws the `--window-ms` of events ending at `--t-s` as a space-time point
+cloud and in every representation (the voxel grid one panel per bin), to
+`<recording>_repr_<t>s/` (`overview.png`, `overview.pdf`, `panels/*.png`).
+The figure with all six representations that were compared is in
+`results/figures/`.
+
+## Tests
+
+On the lab recordings (ball at a known distance; boxes and times in the
+script):
+
+```bash
+python tests/evaluate_lab.py --data ~/Documents/Project/data_collection/lab \
+    --config ~/Documents/Project/data_collection/sessions/lab_kalibrering/config --out <folder>
+```
+
+Writes `results.csv` and `summary.md`. Without hardware, on a simulated
+scene with known depth:
+
+```bash
 python tests/simulate_scene.py sessions/sim_depth
 python depth.py sessions/sim_depth --config sessions/sim_depth/config --start-s 0.05 --step-ms 25 --preview
 python tests/check_depth.py sessions/sim_depth
+python tests/compare_representations.py sessions/sim_depth [--tag zncc --cost zncc]
 ```
 
 The simulator renders a textured board at 2 m in front of a textured wall at
-6 m, both sliding sideways, through a 400 mm baseline rig with lens distortion
-and a slight relative rotation. It generates events from log-brightness changes
-with threshold mismatch, timestamp jitter and noise. `check_depth.py`
-compares every output point with the true depth.
-
-Results with the defaults:
-
-| Surface | Disparity error, median | MAE | Outliers (> 1 px) | Depth error, median |
-| --- | --- | --- | --- | --- |
-| Board, 2 m | -0.02 px | 0.25 px | 0.5 % | 0.5 % |
-| Wall, 6 m | +0.02 px | 0.51 px | 2.5 % | 1.6 % |
-
-It also passes with the cameras swapped (`--baseline-mm -400`).
-
-Observations from the simulation, worth checking on real data:
-
-- The event frame (`count`) matched far better than the time surface (`ts`):
-  with a 10 ms window, 57 % vs 21 % of the candidate pixels were kept, and the
-  board outliers were 3 % vs 12 %. The time surface depends on exact event
-  timing, which differs between two pixels with different thresholds.
-- The window length matters most. When the texture moved under one pixel per
-  window, almost nothing matched. Going from 10 to 20 ms cut the wall outliers
-  from 9 % to 2.5 %.
-- Most remaining outliers are next to the board's edges, where part of the
-  wall is hidden from one camera.
+6 m, both sliding sideways, through a 400 mm baseline rig with lens
+distortion and a slight relative rotation, and generates events from
+log-brightness changes with threshold mismatch, timestamp jitter and noise.
+`check_depth.py` compares every output point with the true depth.
+`compare_representations.py` runs every representation; options it does not
+know are passed on to `depth.py`. It also passes with the cameras swapped
+(`--baseline-mm -400`). With the defaults (`voxel` + census): board MAE
+0.17 px, wall MAE 0.36 px, 2.5 % of wall points more than 1 px off.
 
 ## Not done yet
 
-- Temporal filtering of depth across steps.
-- Voxel-grid and polarity-split representations.
-- Evaluation against RealSense or lidar (needs the extrinsic calibration
+- Noise filtering before rectification (hot pixels, background activity).
+  The lab recordings have about 170 000 background events per second spread
+  over the whole image.
+- A fast-moving object in the simulation, to test the event matcher against
+  known depth.
+- Tracking the ball's depth over time (for example a Kalman filter).
+- Evaluation against the RealSense depth (needs the extrinsic calibration
   between the sensors).
-- Speed: about 0.4 s per step in Python on a laptop. Fine for offline
-  evaluation, not for real time.
+- Running `depth_events.py` on the Raspberry Pi.

@@ -1,3 +1,6 @@
 sessions/
 __pycache__/
 *.pyc
+# C++ build output (cpp/build.sh)
+cpp/build/
+evdepth/_evmatch*.so
