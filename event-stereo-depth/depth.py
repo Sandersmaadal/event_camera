@@ -32,6 +32,7 @@ from evcalib.events import load_events  # noqa: E402
 
 from evdepth.costs import COSTS  # noqa: E402
 from evdepth.matching import MatchParams, match  # noqa: E402
+from evdepth.noise import background_activity  # noqa: E402
 from evdepth.rectify import StereoCalib, make_rectifiers  # noqa: E402
 from evdepth.representation import (REPRESENTATIONS, EventWindow, ReprParams, event_count,  # noqa: E402
                                     make_representation, to_gray)
@@ -108,6 +109,8 @@ def main():
     ap.add_argument("--duration-s", type=float, default=None, help="process only this much")
     ap.add_argument("--right-offset-us", type=int, default=0,
                     help="added to right timestamps, only if the cameras were not hardware synced")
+    ap.add_argument("--noise-filter-ms", type=float, default=5.0,
+                    help="background activity filter: keep events with a neighbour this recent (0 = off)")
     ap.add_argument("--row-shift", type=float, default=0.0,
                     help="row shift measured by check_rectification.py (median), corrected in the right "
                          "camera. Only for recordings where the rig moved after calibration")
@@ -156,6 +159,12 @@ def main():
     left_file, right_file = find_inputs(args.recording.rstrip("/"))
     print(f"Loading {left_file} and {right_file} ...")
     ev_l, ev_r = load_events(left_file), load_events(right_file)
+    if args.noise_filter_ms > 0:
+        n_l, n_r = len(ev_l), len(ev_r)
+        ev_l = background_activity(ev_l, args.noise_filter_ms * 1000)
+        ev_r = background_activity(ev_r, args.noise_filter_ms * 1000)
+        print(f"Noise filter ({args.noise_filter_ms:g} ms) kept {100 * len(ev_l) / n_l:.0f} % of the left and "
+              f"{100 * len(ev_r) / n_r:.0f} % of the right events")
     if (ev_l.width, ev_l.height) != (calib.width, calib.height):
         sys.exit(f"Recording is {ev_l.width} x {ev_l.height} but the calibration is "
                  f"{calib.width} x {calib.height}.")

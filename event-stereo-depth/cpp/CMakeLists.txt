@@ -1,4 +1,4 @@
-# Builds evdepth/_evmatch (the C++ event matching) as a Python module.
+# Builds evdepth/_evmatch (the C++ event matching and noise filter) as a Python module.
 # Use cpp/build.sh rather than calling cmake yourself.
 cmake_minimum_required(VERSION 3.15)
 project(evmatch CXX)
@@ -10,7 +10,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(pybind11 CONFIG REQUIRED)
-pybind11_add_module(_evmatch event_match.cpp)
+pybind11_add_module(_evmatch event_match.cpp noise_filter.cpp)
 target_compile_options(_evmatch PRIVATE -Wall -Wextra)
 
 # Put the module next to the Python code, so that "from evdepth import _evmatch" finds it.

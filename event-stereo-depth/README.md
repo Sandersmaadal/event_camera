@@ -23,19 +23,22 @@ box; within ±10 % of the true distance:
 
 | Method | 1 m | 2 m | 3 m | Computing per second of recording |
 | --- | --- | --- | --- | --- |
-| `depth.py` (`voxel` + census) | 5971 points, +1.1 %, 99.7 % | 1534 points, 0.0 %, 99.2 % | 731 points, -3.6 %, 99.2 % | about 14 s |
-| `depth_events.py` | 4745 points, +1.5 %, 99.9 % | 1402 points, -1.0 %, 100 % | 395 points, -3.4 %, 99.7 % | 0.2-0.7 s |
+| `depth.py` (`voxel` + census) | 5405 points, +1.2 %, 100 % | 1398 points, -0.1 %, 100 % | 604 points, -3.4 %, 100 % | about 11-13 s |
+| `depth_events.py` | 4504 points, +1.5 %, 100 % | 1268 points, -1.0 %, 99.9 % | 304 points, -3.5 %, 100 % | 0.2-0.4 s |
 
-(points, error of the median, share within ±10 %). The error pattern is the
-same for every method, so it most likely comes from the setup (where the
-distance was measured from, how exactly the ball was placed), not from the
-matching.
+(points, error of the median, share within ±10 %, rounded to 0.1 %; with the
+default 5 ms noise filter). The error pattern is the
+same for every method. Against the RealSense instead of the tape (see
+"RealSense"), the event depth is short by 1.2, 3.8 and 5.2 % at 1, 2 and 3 m:
+an error that grows with distance like a 1.3-2 px disparity error, most likely
+a camera that turned slightly after calibration. Details and all numbers:
+[results/DECISIONS.md](results/DECISIONS.md), decisions 8-10.
 
 ## Use
 
 ```bash
 pip install numpy opencv-python matplotlib pybind11
-cpp/build.sh                  # the C++ part, for depth_events.py; needs cmake and a C++17 compiler
+cpp/build.sh                  # the C++ part (event matcher, noise filter); needs cmake and a C++17 compiler
 
 python depth.py <recording> --config <calib session>/config [--preview] [--roi X0 Y0 X1 Y1]
 python depth_events.py <recording> --config <calib session>/config
@@ -45,9 +48,9 @@ python depth_events.py <recording> --config <calib session>/config
 `record_all` prefix such as `/media/master27/T7/recordings/test01` (which
 finds `test01_left.raw` and `test01_right.raw`). Reading `.raw` needs the
 Metavision SDK; convert to `.npz` with `event-stereo-calib/convert.py` to
-work on another machine. Run `cpp/build.sh` again after every change to
-`cpp/event_match.cpp`; without the build everything except `depth_events.py`
-works.
+work on another machine. Run `cpp/build.sh` again after every change to the
+files in `cpp/`. Without the build, `depth.py` still works with
+`--noise-filter-ms 0`; `depth_events.py` needs it.
 
 Output of `depth.py` in `<recording>_depth/` (`depth_events.py`:
 `<recording>_depth_events/`):
@@ -68,6 +71,11 @@ breakdown is the first thing to look at when results are poor.
 
 ## depth.py: windowed matching
 
+0. **Noise filter** (`evdepth/noise.py`, `--noise-filter-ms`, default 5): an event
+   is kept only when one of its 8 neighbouring pixels had an event at most 5 ms
+   before it. Edges of moving objects fire in neighbouring pixels close together
+   in time; noise and hot pixels fire alone. Runs in C++ (`cpp/noise_filter.cpp`),
+   so it needs `cpp/build.sh`; `--noise-filter-ms 0` switches it off.
 1. **Rectification** (`evdepth/rectify.py`). A lookup table per camera maps
    raw pixel (x, y) to rectified sub-pixel (x, y). After it, matching events
    are on the same row in both cameras.
@@ -110,6 +118,7 @@ breakdown is the first thing to look at when results are poor.
 | `--cost` | census | `census` or `zncc` |
 | `--patch` | 11 | Larger is more robust, but blurs depth edges |
 | `--max-cost`, `--min-margin` | census: 0.35, 0.02; zncc: 0.25, 0.05 | Cost and uniqueness limits. For ZNCC, 0.25 means a ZNCC of at least 0.5 |
+| `--noise-filter-ms` | 5 | Background activity filter, 0 = off. 2 ms is too strong at 3 m |
 | `--row-shift` | 0 | Row shift measured with `check_rectification.py`, corrected in the right camera. Only when the rig moved after calibration |
 | `--right-offset-us` | 0 | Only for recordings without hardware sync |
 
@@ -122,7 +131,8 @@ matcher, is often the limit at long range.
 The matching is in `cpp/event_match.cpp`, used from Python as
 `evdepth._evmatch` through pybind11. Left and right events are processed
 together in time order; each camera keeps the time of its latest event per
-pixel and polarity. For each left event, using only events up to its time:
+pixel and polarity. Both cameras' events first go through the same noise filter
+as in `depth.py`. For each left event, using only events up to its time:
 
 1. the recent left events in the `--patch` neighbourhood (at most
    `--max-age-ms` old) are compared with the right camera's latest event of
@@ -150,7 +160,7 @@ depend on the number of threads.
 | `--max-cost`, `--min-margin` | 0.6, 0.02 | |
 | `--lr-tol` | 1 | Pixels; -1 switches the left-right check off |
 | `--threads` | 0 | 0 = all cores |
-| `--row-shift`, `--max-disp`, `--min-disp` | as in `depth.py` | |
+| `--noise-filter-ms`, `--row-shift`, `--max-disp`, `--min-disp` | as in `depth.py` | |
 | `--step-ms`, `--window-ms` | 50, 20 | Only for the steps of `depth.npz` |
 
 The work per event is (recent left events in the patch) x (disparities) x
@@ -192,6 +202,43 @@ For new recordings: calibrate after the rig is mounted in its final place,
 don't touch it between calibration and recording, and run
 `check_rectification.py` on every recording.
 
+## RealSense
+
+The rig's RealSense D435 recorded depth and colour (`<recording>_realsense.db3`).
+`evdepth/realsense.py` reads it without ROS or librealsense: depth in metres,
+colour, intrinsics, the colour-to-depth transform, and capture times on the
+event clock (through the clock anchor in `_info.json`).
+
+```bash
+python realsense_ball.py <recording> [--start-s 4.2 --duration-s 0.8] [--sheet]
+```
+
+Finds the ball in every depth frame and writes `<recording>_realsense_ball/ball.csv`
+(time, pixel, distance to the ball's surface and centre, `ok` = consistent with the
+frames around it). With light, the yellow-green ball in the colour image says
+where to look and the depth image is searched nearby for the most uniform
+ball-sized disc. In the dark (`--method depth`, chosen automatically when the
+colour image is dark) the ball is a moving blob closer than the background, as wide
+as a ball at its depth; set `--max-depth-m` to the room's range. A ball lying on
+the floor can only be found with colour. Recordings without `_info.json`
+(lab_test07) take their time from the `.raw` header, good to about ±0.5 s
+(`--time-offset-s` corrects it).
+
+`tests/evaluate_lab.py` compares every point with the RealSense distance at the
+same moment (columns `rs_*`, `--no-realsense` to skip).
+
+For a ball that moves around without a fixed box (lab_test07, thrown in the dark):
+
+```bash
+python depth_events.py <recording> --config <config> --row-shift -2 --max-disp 200 \
+    --out <recording>_depth_events
+python realsense_ball.py <recording> --max-depth-m 2
+python tests/compare_ball_tracks.py <recording> --start-s 0 --duration-s 13.8
+```
+
+`compare_ball_tracks.py` finds the ball in the matched events of every step (the
+densest ball-wide group) and plots both distances over time (`tracks.png`).
+
 ## Figures
 
 ```bash
@@ -214,7 +261,8 @@ python tests/evaluate_lab.py --data ~/Documents/Project/data_collection/lab \
     --config ~/Documents/Project/data_collection/sessions/lab_kalibrering/config --out <folder>
 ```
 
-Writes `results.csv` and `summary.md`. Without hardware, on a simulated
+Writes `results.csv` and `summary.md`, with the comparison against the RealSense
+(see "RealSense"). Without hardware, on a simulated
 scene with known depth:
 
 ```bash
@@ -231,17 +279,22 @@ log-brightness changes with threshold mismatch, timestamp jitter and noise.
 `check_depth.py` compares every output point with the true depth.
 `compare_representations.py` runs every representation; options it does not
 know are passed on to `depth.py`. It also passes with the cameras swapped
-(`--baseline-mm -400`). With the defaults (`voxel` + census): board MAE
-0.17 px, wall MAE 0.36 px, 2.5 % of wall points more than 1 px off.
+(`--baseline-mm -400`). With the defaults (`voxel` + census, 5 ms noise filter):
+board MAE 0.18 px, wall MAE 0.52 px, 3.8 % of wall points more than 1 px off
+(without the filter 0.17 px, 0.36 px and 2.5 %: the simulation has little noise,
+so there the filter mostly removes real events).
 
 ## Not done yet
 
-- Noise filtering before rectification (hot pixels, background activity).
-  The lab recordings have about 170 000 background events per second spread
-  over the whole image.
+- Other noise filters (for example one that also uses polarity, or a hot-pixel
+  list); the background activity filter is the only one tried.
 - A fast-moving object in the simulation, to test the event matcher against
   known depth.
 - Tracking the ball's depth over time (for example a Kalman filter).
-- Evaluation against the RealSense depth (needs the extrinsic calibration
-  between the sensors).
+- A pixel-by-pixel comparison with the RealSense, which needs the extrinsic
+  calibration between the sensors: record a checkerboard with both at the next lab
+  session. (The RealSense sits on the same line as the event cameras, so the ball
+  comparison needs no offset.)
+- Correcting the 1.3-2 px disparity error found with the RealSense (or
+  recalibrating).
 - Running `depth_events.py` on the Raspberry Pi.

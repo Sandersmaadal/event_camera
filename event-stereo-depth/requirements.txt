@@ -2,3 +2,5 @@ numpy
 opencv-python
 matplotlib
 pybind11      # only for building the C++ part (cpp/build.sh)
+mcap                # only for gnss/extract_gnss.py (reading the milliAmpere bags)
+mcap-ros2-support

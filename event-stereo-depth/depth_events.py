@@ -45,6 +45,7 @@ from evcalib.events import load_events  # noqa: E402
 
 from depth import find_inputs, rectify_window  # noqa: E402
 from evdepth.rectify import StereoCalib, make_rectifiers  # noqa: E402
+from evdepth.noise import background_activity  # noqa: E402
 
 try:
     from evdepth import _evmatch  # noqa: E402  (the C++ part, built with cpp/build.sh)
@@ -88,6 +89,8 @@ def main():
     ap.add_argument("--out", help="output folder (default: <recording>_depth_events)")
     ap.add_argument("--start-s", type=float, default=0.0)
     ap.add_argument("--duration-s", type=float, default=None)
+    ap.add_argument("--noise-filter-ms", type=float, default=5.0,
+                    help="background activity filter: keep events with a neighbour this recent (0 = off)")
     ap.add_argument("--row-shift", type=float, default=0.0, help="as in depth.py")
     ap.add_argument("--min-disp", type=int, default=0)
     ap.add_argument("--max-disp", type=int, default=96)
@@ -109,6 +112,12 @@ def main():
     calib = StereoCalib(args.config)
     rect_l, rect_r = make_rectifiers(calib)
     ev_l, ev_r = (load_events(f) for f in find_inputs(args.recording.rstrip("/")))
+    if args.noise_filter_ms > 0:
+        n_l, n_r = len(ev_l), len(ev_r)
+        ev_l = background_activity(ev_l, args.noise_filter_ms * 1000)
+        ev_r = background_activity(ev_r, args.noise_filter_ms * 1000)
+        print(f"Noise filter ({args.noise_filter_ms:g} ms) kept {100 * len(ev_l) / n_l:.0f} % of the left and "
+              f"{100 * len(ev_r) / n_r:.0f} % of the right events")
     t0 = max(ev_l.t[0], ev_r.t[0]) + int(args.start_s * 1e6)
     t_end = min(ev_l.t[-1], ev_r.t[-1])
     if args.duration_s:

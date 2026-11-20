@@ -4,3 +4,8 @@ __pycache__/
 # C++ build output (cpp/build.sh)
 cpp/build/
 evdepth/_evmatch*.so
+# report: intermediate runs (made again by the scripts)
+report/out/*/runs/
+report/out/*/events/
+report/out/*/realsense/
+report/out/*.log

@@ -17,6 +17,11 @@ the points inside the ball's box count. For each test and method:
 - within5/10    share of the points within ±5 % / ±10 % of the truth
 - compute_x     computing time per second of recording (below 1 = faster
                 than real time)
+- rs_m          RealSense distance to the ball's centre (realsense_ball.py), median
+                over the steps with points
+- rs_error_pct, rs_mae_pct, rs_within10
+                as above, but each point compared with the RealSense distance at the
+                same moment (nearest ok RealSense frame within 70 ms) instead of the tape
 
 Writes results.csv (one row per test and method) and summary.md (tables per
 method) to --out. Runs that are already in --out are reused; delete the
@@ -52,12 +57,28 @@ METHODS = {
     "count_census": ("depth.py", ["--repr", "count", "--cost", "census"]),
     "voxel_zncc": ("depth.py", ["--repr", "voxel", "--cost", "zncc"]),
     "voxel_census": ("depth.py", ["--repr", "voxel", "--cost", "census"]),
+    "voxel_census_no_filter": ("depth.py", ["--repr", "voxel", "--cost", "census", "--noise-filter-ms", "0"]),
     "voxel_census_no_row_shift": ("depth.py", ["--repr", "voxel", "--cost", "census", "--row-shift", "0"]),
     "events": ("depth_events.py", []),
+    "events_no_filter": ("depth_events.py", ["--noise-filter-ms", "0"]),
 }
 # The methods removed in the clean-up and their results: results/DECISIONS.md.
 
 STEP_MS = 50.0
+WINDOW_MS = 20.0        # depth.py / depth_events.py default; a step's time is the end of its window
+RS_MAX_GAP_S = 0.07
+
+
+def realsense_ball(test, args):
+    """RealSense ball distance over time: (t_s, centre_m) arrays, computed once per test."""
+    out = os.path.join(args.out, "realsense", test)
+    path = os.path.join(out, "ball.csv")
+    if args.rerun or not os.path.exists(path):
+        cmd = [sys.executable, os.path.join(ROOT, "realsense_ball.py"), os.path.join(args.data, test),
+               "--out", out, "--sheet"]
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    rows = [r for r in csv.DictReader(open(path)) if r["ok"] == "1"]
+    return np.array([float(r["t_s"]) for r in rows]), np.array([float(r["centre_m"]) for r in rows])
 
 
 def run(method, test, rng, args):
@@ -84,13 +105,22 @@ def run(method, test, rng, args):
 def evaluate(test, method, args):
     spec = TESTS[test]
     x0, y0, x1, y1 = spec["roi"]
-    z_all, n_steps, steps_hit, computes = [], 0, 0, []
+    z_all, rs_all, n_steps, steps_hit, computes = [], [], 0, 0, []
+    rs_t, rs_z = realsense_ball(test, args) if args.realsense else (np.array([]), np.array([]))
     for rng in spec["times"]:
         out, compute = run(method, test, rng, args)
         computes.append(compute)
         d = np.load(os.path.join(out, "depth.npz"))
         inside = (d["x"] >= x0) & (d["x"] < x1) & (d["y"] >= y0) & (d["y"] < y1) & np.isfinite(d["depth_m"])
         z_all.append(d["depth_m"][inside])
+        # RealSense distance at each point's step (middle of its window), NaN without a frame close by.
+        t_mid = (d["times_us"][d["frame"][inside]] - WINDOW_MS * 500) / 1e6
+        if rs_t.size:
+            k = np.clip(np.searchsorted(rs_t, t_mid), 1, max(rs_t.size - 1, 1))
+            k = np.where(np.abs(rs_t[k - 1] - t_mid) < np.abs(rs_t[k] - t_mid), k - 1, k)
+            rs_all.append(np.where(np.abs(rs_t[k] - t_mid) <= RS_MAX_GAP_S, rs_z[k], np.nan))
+        else:
+            rs_all.append(np.full(t_mid.shape, np.nan))
         n_steps += len(d["times_us"])
         steps_hit += len(np.unique(d["frame"][inside]))
     z = np.concatenate(z_all)
@@ -104,6 +134,14 @@ def evaluate(test, method, args):
                    mae_pct=round(100 * float(np.mean(np.abs(rel))), 1),
                    within5=round(100 * float(np.mean(np.abs(rel) <= 0.05)), 1),
                    within10=round(100 * float(np.mean(np.abs(rel) <= 0.10)), 1))
+        rs = np.concatenate(rs_all)
+        ok = np.isfinite(rs)
+        if ok.any():
+            rel_rs = (z[ok] - rs[ok]) / rs[ok]
+            row.update(rs_points=int(ok.sum()), rs_m=round(float(np.median(rs[ok])), 3),
+                       rs_error_pct=round(100 * float(np.median(rel_rs)), 1),
+                       rs_mae_pct=round(100 * float(np.mean(np.abs(rel_rs))), 1),
+                       rs_within10=round(100 * float(np.mean(np.abs(rel_rs) <= 0.10)), 1))
     return row
 
 
@@ -117,6 +155,8 @@ def main():
     ap.add_argument("--row-shift", type=float, default=-2.0, help="see check_rectification.py")
     ap.add_argument("--max-disp", type=int, default=128, help="128 px reaches down to about 0.8 m")
     ap.add_argument("--rerun", action="store_true", help="compute runs again even if they exist")
+    ap.add_argument("--no-realsense", dest="realsense", action="store_false",
+                    help="skip the comparison with the RealSense ball distance")
     args = ap.parse_args()
     args.data = os.path.expanduser(args.data)
     args.config = os.path.expanduser(args.config)
@@ -129,7 +169,8 @@ def main():
             rows.append(evaluate(test, method, args))
 
     fields = ["test", "truth_m", "method", "points", "steps", "median_m", "error_pct", "mae_pct",
-              "within5", "within10", "compute_x"]
+              "within5", "within10", "compute_x", "rs_points", "rs_m", "rs_error_pct", "rs_mae_pct",
+              "rs_within10"]
     with open(os.path.join(args.out, "results.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -139,16 +180,19 @@ def main():
     for test in args.tests:
         spec = TESTS[test]
         lines += [f"## {test}: ball at {spec['truth_m']:g} m", "",
-                  "| Method | Points | Steps | Median | Error | MAE | Within ±5 % | Within ±10 % | Compute per s |",
-                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+                  "| Method | Points | Steps | Median | Error | MAE | Within ±5 % | Within ±10 % | Compute per s "
+                  "| RealSense | Error vs RS | MAE vs RS | Within ±10 % of RS |",
+                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
         for r in rows:
             if r["test"] == test:
                 if r["points"]:
                     lines.append(f"| {r['method']} | {r['points']} | {r['steps']} | {r['median_m']:.3f} m | "
                                  f"{r['error_pct']:+.1f} % | {r['mae_pct']:.1f} % | {r['within5']:.0f} % | "
-                                 f"{r['within10']:.0f} % | {r['compute_x']:.2f} s |")
+                                 f"{r['within10']:.0f} % | {r['compute_x']:.2f} s | " + (
+                                     f"{r['rs_m']:.3f} m | {r['rs_error_pct']:+.1f} % | {r['rs_mae_pct']:.1f} % | "
+                                     f"{r['rs_within10']:.0f} % |" if "rs_m" in r else "| | | |"))
                 else:
-                    lines.append(f"| {r['method']} | 0 | {r['steps']} | | | | | | {r['compute_x']:.2f} s |")
+                    lines.append(f"| {r['method']} | 0 | {r['steps']} | | | | | | {r['compute_x']:.2f} s | | | | |")
         lines.append("")
     summary = "\n".join(lines)
     with open(os.path.join(args.out, "summary.md"), "w") as f:

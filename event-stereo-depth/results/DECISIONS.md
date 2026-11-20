@@ -172,15 +172,123 @@ identical results and saved 20-40 %; leaving them out was 3x faster but
 less accurate (simulation wall error 0.51 -> 0.89 px with ZNCC). The real
 speed-up came from the event-by-event C++ instead.
 
+### 8. RealSense as the reference for the ball distance
+
+The RealSense D435 recorded depth (1280 x 720, 15 fps) and colour during every lab
+test. `realsense_ball.py` finds the ball in each depth frame and gives the distance
+to its centre; `tests/evaluate_lab.py` compares every event point with the RealSense
+frame at the same moment. Results in `lab_realsense/` (`summary.md`, and the
+RealSense ball track per test).
+
+| Test (tape) | RealSense, ball centre | Spread over frames | `voxel` + census vs RealSense | Events vs RealSense |
+| --- | --- | --- | --- | --- |
+| 1 m | 1.019 m (roll 1: about 1.07 m, roll 2: about 1.015 m) | 1.010-1.026 m (roll 2) | -1.2 %, MAE 2.1 % | -1.3 %, MAE 1.7 % |
+| 2 m | 2.058 m | 2.050-2.070 m | -3.0 %, MAE 4.6 % | -3.8 %, MAE 3.7 % |
+| 3 m | 3.048 m | 3.030-3.093 m | -5.5 %, MAE 6.5 % | -5.0 %, MAE 6.2 % |
+
+- The RealSense agrees with the tape to 2-6 cm, and shows that the two rolls of
+  test 1 were at different distances (about 1.07 and 1.015 m). Per-frame RealSense
+  distances are a better reference than one tape distance per test.
+- Against the RealSense the event depth is short by an amount that grows with
+  distance: -1.3, -3.8, -5.0 % (events), -1.2, -3.0, -5.5 % (`voxel` + census). A
+  constant disparity error does exactly that (depth error = z^2 / (f B) x
+  disparity error): the numbers fit a disparity that is 1.3-2.0 px too large. That
+  matches a camera that turned sideways by about 0.3 deg after calibration, the
+  same size as the 0.3 deg tilt behind the -2 row shift (decision 1). A
+  mounting offset between the RealSense and the event cameras cannot explain it:
+  that would be the same number of centimetres at every distance.
+- How the ball is found: the colour image says roughly where (a ball lying on the
+  floor has almost the floor's depth), and the depth image is searched nearby for
+  the most uniform ball-sized disc. The search is needed because the stored
+  colour-to-depth calibration is off by up to about 20 px (always to the left,
+  whichever way the ball rolls, so it is not a time lag). The centre is 0.9 ball
+  radii behind the measured surface (a tennis ball, radius 33.5 mm, is assumed).
+- The RealSense sits on the same line as the event cameras, just to the right of
+  the right camera, so both measure depth from the same plane: no offset to
+  correct. Not corrected: the RealSense's own error (about 2 % at
+  2 m per pixel for a D435; much smaller for the median over a ball).
+
+### 9. Darkness (lab_test07): the event cameras keep the ball, the RealSense smears it
+
+Ball thrown in almost full darkness; the light comes on at about 14 s.
+`tests/compare_ball_tracks.py` finds the ball in the events as the densest
+ball-wide group of matched events per 50 ms step, and compares it with the
+RealSense track. Results in `lab_test07_dark/` (`tracks.png`), figures
+`figures/test07_events_vs_realsense.jpg` and `figures/test07_matched_events.jpg`.
+
+- The event cameras see the ball as a sharp, compact blob, even with 540 000
+  noise events per second (mostly dark noise). The event matcher measures it: the
+  ball is a dense group of matched events at 0.9-1.5 m, the noise only scattered
+  single matches.
+- The RealSense depth still works in the dark (its infrared projector lights the
+  scene), but its exposure goes up to 65 ms, so a thrown ball becomes a long streak
+  and its depth is an average over the smear. Its colour camera sees nothing.
+- Where both found the ball (39 RealSense frames, 0-13.8 s, with the noise
+  filter): events minus RealSense median +2.1 %, 90 % within ±10 % (without the
+  filter: 42 frames, +1.7 %, 83 %). The tracks follow the same throws at
+  2.1-2.9, 4.2-5.3 and 9.3-10.5 s; at 6.0-6.9 s only the events follow the ball.
+  The RealSense also reports a ball at times without an event track (5.5-5.9,
+  8.4-8.9, 11-12 s), which are not checked yet: they may be the ball, or wrong
+  finds.
+- Cost: without a noise filter the matcher needs 3.0 s of computing per second
+  of recording in the dark (0.2-0.7 s in the light), because every noise event is
+  matched too. With the 5 ms filter (decision 10) 1.3 s.
+- Timing: test07 has no `_info.json`, so its time comes from the start second in
+  the `.raw` header (about ±0.5 s). The tracks lining up within a frame on three
+  throws suggests the error is much smaller than that.
+- The RealSense's infrared projector is visible to the event cameras: a dotted
+  pattern appears about once a second in the dark. Worth testing with the
+  projector off, or with a filter.
+
+### 10. Noise filter: background activity filter, 5 ms, before rectification
+
+An event is kept when one of its 8 neighbouring pixels had an event at most 5 ms
+before it (`evdepth/noise.py`, C++ in `cpp/noise_filter.cpp`, 0.3 s for 7
+million events). Results in `lab_noise_filter/` (all methods with the filter; the
+`*_no_filter` rows are the old defaults) and `lab_test07_dark/` (`no_filter/` for
+the run without it).
+
+It removes most events: 59-75 % in the lit lab tests (mostly the 170 000 noise
+events per second), 58-65 % in the dark (left and right camera).
+
+| | 1 m | 2 m | 3 m |
+| --- | --- | --- | --- |
+| Events, no filter: points, MAE vs tape, computing | 4745, 2.8 %, 0.53 s | 1402, 1.0 %, 0.67 s | 395, 3.5 %, 0.24 s |
+| Events, 5 ms | 4504, 2.5 %, 0.37 s | 1268, 1.0 %, 0.38 s | 304, 3.5 %, 0.17 s |
+| Events, 2 ms | 3680, 2.5 %, 0.33 s | 924, 1.0 %, 0.25 s | 100 (11 of 18 steps), 3.6 %, 0.10 s |
+| `voxel` + census, no filter | 5971, 3.3 % | 1534, 2.3 % | 731, 3.9 % |
+| `voxel` + census, 5 ms | 5405, 2.4 % | 1398, 0.5 % | 604, 3.3 % |
+| `count` + ZNCC, no filter | 3393, 73.1 % | 1148, 9.3 % | 551, 15.5 % |
+| `count` + ZNCC, 5 ms | 2912, 5.7 % | 1057, 0.6 % | 460, 5.1 % |
+
+- 5 ms: as accurate or more accurate everywhere, for every method, at the cost of
+  5-23 % of the points. The weak methods gain most, because the filter removes
+  the noise their outliers came from.
+- The event matcher gets 1.4-1.8x faster in the light (fewer events to match).
+  In the dark (lab_test07) 2.6x: 3.0 -> 1.15-1.33 s per second of recording,
+  still not real time there. The windowed matching gets only a little faster: it
+  computes a cost at every pixel anyway.
+- In the dark the event ball track agrees better with the RealSense: within
+  ±10 % in 90 % of the paired frames instead of 83 %, with 74 instead of 81 steps
+  with a ball.
+- 2 ms is too strong: at 3 m only 100 points in 11 of 18 steps are left.
+- On the simulation it is worse at the far wall (MAE 0.36 -> 0.52 px, more than
+  1 px off 2.5 -> 3.8 %; the board stays at 0.18 px). The simulation has little
+  noise and a slowly moving texture, so there the filter mostly removes real
+  events. The real recordings are the ones that count, but on a clean, slow scene
+  the filter can cost accuracy.
+- Kept at 5 ms as the default in `depth.py` and `depth_events.py`
+  (`--noise-filter-ms 0` switches it off). Not tried: other filters (polarity,
+  a hot-pixel list, a larger neighbourhood).
+
 ## Open points
 
-- All methods show the same depth error pattern: about +1 % at 1 m, 0 % at
-  2 m, -3.5 % at 3 m. Because it is the same for every method it comes from
-  the setup, not the matching: how the distance was measured (from which
-  point of the rig, to the front or the centre of the ball) and how exactly
-  the ball was placed. At 3 m, 3.5 % is about 10 cm. It could also be a
-  small sideways turn of a camera after calibration, which the rectification
-  check cannot see.
+- All methods show the same depth error pattern against the tape: about +1 % at
+  1 m, 0 % at 2 m, -3.5 % at 3 m. The RealSense comparison (decision 8) shows it
+  is not the tape: against the RealSense the error grows with distance, as a
+  disparity error of 1.3-2.0 px would make, most likely a small sideways turn of
+  a camera after calibration. To check: estimate the disparity offset on tests 1-3
+  and test the correction on other recordings, or recalibrate.
 - The ball boxes were set by eye; a tracker would make the evaluation
   independent of that choice.
 - The simulation has no fast-moving object, so it cannot judge the event

@@ -236,8 +236,11 @@ py::dict match_events(const Ints& xl, const Ints& yl, const Flags& onl, const In
     return d;
 }
 
+void add_noise_filter(py::module_& m);   // cpp/noise_filter.cpp
+
 PYBIND11_MODULE(_evmatch, m) {
-    m.doc() = "Event-by-event stereo matching (see cpp/event_match.cpp)";
+    m.doc() = "Event-by-event stereo matching (cpp/event_match.cpp) and noise filter (cpp/noise_filter.cpp)";
+    add_noise_filter(m);
     m.def("match_events", &match_events, "Event-by-event matching, a disparity per left event",
           py::arg("xl"), py::arg("yl"), py::arg("onl"), py::arg("tl"),
           py::arg("xr"), py::arg("yr"), py::arg("onr"), py::arg("tr"),
